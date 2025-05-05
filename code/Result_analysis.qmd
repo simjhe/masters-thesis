@@ -1,0 +1,455 @@
+---
+title: ""
+author: ""
+date: ""
+format:
+  pdf:
+    fontsize: 9pt
+    include-in-header: 
+      text: '\pagenumbering{gobble}'
+execute:
+  eval: false
+  echo: true
+  warning: false
+  messages: false
+---
+
+# Load packages
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(diptest)
+library(caret)
+```
+
+# Function to calculate polarization measures
+
+```{r}
+# input: exp_results (dataframe; contains results of simulations)
+analyze_simdat <- function(exp_results) {
+  
+  # assign inputted dataframe to object
+  dt_exp_results <- exp_results 
+  
+  # Calculate the polarization measures
+  dt_exp_results |> 
+    group_by(c_threshold, lambda, g_s_run) |> # calculate measures for each value of the trust threshold,
+                                              # susceptibility and each graph/opinion generation cycle  
+    summarise(dip_init = diptest::dip.test(in_opinion)$statistic, # dip test statistic at initialization
+              dip = diptest::dip.test(exp_opinion)$statistic, # dip test statistic at end
+              dip_p = diptest::dip.test(exp_opinion)$p.value, # p-value of dip test
+              var_init = var(in_opinion), # variance at initialization
+              var = var(exp_opinion), # variance at end
+              var_p = var.test(in_opinion, exp_opinion)$p.value) |> # p-value of f-test
+    ungroup() |> 
+    group_by(lambda, c_threshold) |> # calculate average changes for each value of the 
+                                     # trust threshold and susceptibility
+    summarise(dip_change = (mean(dip) - mean(dip_init)) |> round(digits = 4), # dip test statistic
+              dip_p_90 = quantile(dip_p, 0.9), # 90% percentile of p-values of dip test 
+              var_change = (mean(var) - mean(var_init)) |> round(digits = 4), # variance 
+              var_p_90 = quantile(var_p, 0.9)) -> dt_exp_results_analyzed # 90% percentile of p-values 
+                                                                          # of f-test
+  
+  # return dataframe with analysis results 
+  return(dt_exp_results_analyzed) 
+}
+```
+
+# Analysis of Experiment 1
+
+## Load data
+
+```{r}
+read.csv(file = "results_experiment1.csv") -> dt_simdat
+```
+
+## Create heatmap of bimodality and dispersion
+
+```{r}
+# get dataframe with calculated polarization measures
+dt_simdat |>
+    analyze_simdat() -> analysis_res
+  
+# prepare dataframe for visualization 
+analysis_res |> 
+  # round output values
+  mutate(dip_change = round(dip_change, digits = 2), 
+         var_change = round(var_change, digits = 2)) |> 
+  # make data long to get both variance and dip test statistic into one figure
+  pivot_longer(cols = c("var_change", "dip_change"), names_to = "stats", values_to = "vals") |>
+  mutate(p_val = ifelse(stats == "var_change", var_p_90, dip_p_90)) -> df_g
+  
+# visualize variance and dip test statistic in heatmap
+df_g |> 
+  ggplot(mapping = aes(x = c_threshold,
+                       y = stats,
+                       fill = vals, 
+                       label = vals)) +
+  # styling of figure 
+  labs(x = "Trust threshold",
+       y = "",
+       caption = "Note. Changes in variance and Hartigan's dip test statistic were averaged across 30 simulation runs. For variance, \n bold values indicate that the variance change was statistically significant (p < 0.05) in at least 90% of the \n simulation runs. Comparisons of variances were performed with an F-test. For Hartigan's dip test, bold \n values indicate that the dip statistic of the resulting opinion distribution was statistically significant \n (p < 0.05) in at least 90% of the simulation runs. Results are based on a fully-connected graph \n (N = 100), a uniform distribution of innate opinions, and a susceptibility of 0.7.") + 
+  geom_tile(color = "white", 
+            show.legend = F) + 
+  geom_text(color = "black", 
+             size = 2.7,
+             fontface = ifelse(df_g$p_val < 0.05, "bold", "plain")) + # use the 90% percentiles 
+                                                                      # to make values bold
+  coord_fixed(ratio = 0.2) +
+  scale_fill_gradient2(low = "#E7786D", mid = "#ffffff", high = "#1A85FF") + 
+  scale_x_continuous(breaks = seq(0, 1, by = 0.1)) +
+  scale_y_discrete(labels = c("Changes in \n Hartigan's Dip \n test statistic", "Changes in \n Variance")) + 
+  theme(axis.ticks.y = element_blank(),
+          axis.text.y = element_text(size = 10),
+          panel.background = element_blank(),
+          panel.border = element_rect(color = 'black', 
+                                    fill = NA, 
+                                    linewidth = 0.5),
+          plot.caption = element_text(hjust = 0, vjust = -5, size = 8)) -> g_output
+
+# save figure
+ggsave(filename = "desc_output_exp1.png", 
+       plot =  g_output,
+       units = "cm",
+       height = 10,
+       width = 18)
+```
+
+## Plot relationship of trust and dispersion and bimodality
+
+```{r}
+# get dataframe with calculated polarization measures
+dt_simdat |>
+  analyze_simdat() -> analysis_res
+  
+# make data long to get both variance and dip test statistic into one figure
+analysis_res |> 
+  pivot_longer(cols = c("var_change", "dip_change"), names_to = "stats", values_to = "vals") -> df_g
+
+# visualize variance and dip test statistic in scatter/line plot
+df_g |> 
+  ggplot(mapping = aes(x = c_threshold,
+                         y = vals,
+                         linetype = stats,
+                         shape = stats)) + 
+  geom_point() +
+  geom_line() +
+  # styling of figure
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  scale_x_continuous(breaks = seq(0, 1, by = 0.1)) +
+  scale_y_continuous(breaks = seq(-0.15, 0.15, by = 0.02)) +
+  labs(x = "Trust threshold",
+       y = "Change in Polarization Measures",
+       shape = "Polarization Measure",
+       linetype = "Polarization Measure",
+       caption = "Note. Changes in variance and Hartigan's dip test statistic were averaged across 30 \n simulation runs. Results are based on a fully-connected graph (N = 100), \n a uniform distribution of innate opinions, and a susceptibility of 0.7.") +
+  scale_linetype_discrete(labels = c("Hartigan's dip test statistic", "Variance")) + 
+  scale_shape_discrete(labels = c("Hartigan's dip test statistic", "Variance")) +
+    theme(panel.background = element_blank(),
+          panel.border = element_rect(color = 'black', 
+                                    fill = NA, 
+                                    linewidth = 0.5),
+          plot.caption = element_text(hjust = 0, vjust = -2, size = 8)) -> g_output
+  
+# save figure
+ggsave(filename = "rel_desc_output_exp1.png", 
+       plot =  g_output,
+       units = "cm",
+       height = 10.5,
+       width = 20)
+```
+
+# Analysis of results of Experiment 2
+
+## Load data
+
+```{r}
+read.csv(file = "results_experiment2.csv") -> dt_simdat
+```
+
+## Function to generate heatmaps depicting all combinations of parameters
+
+```{r}
+# input: data (dataframe; experimental results), graph (character; graph to analyze)
+#        opinion_dist (character; distribution of opinions to analyze), 
+#        outcome (character; polarization measure to show output for)
+#        filename (charater; name of output file)
+create_tables_exp2 <- function(data, graph, opinion_dist, outcome, filename) {
+  data |> 
+    filter(G == graph, # filter for graph and opinion distribution of interest
+           in_opinion_dist == opinion_dist) |> 
+    analyze_simdat() -> analysis_res # get dataframe with calculated polarization measures
+  
+  # generate indices for making values bold
+  ifelse(deparse(substitute(outcome)) == "dip_change", 
+         highlight_scheme <- analysis_res$dip_p_90, 
+         highlight_scheme <- analysis_res$var_p_90)
+  
+  # create captions based on chosen output variable
+  ifelse(deparse(substitute(outcome)) == "dip_change", 
+         caption <- "Note. Changes in bimodality are based on the differences in the averaged Hartigan's dip test statistics \n across simulation runs. Bold values indicate that the Hartigan's dip test of the resulting opinion \n distribution was statistically significant (p < 0.05) in at least 90% of the simulation runs.", 
+         caption <- "Note. Bold values indicate that the variance change was statistically significant (p < 0.05) in at least 90% \n of the simulation runs. Comparisons of variances were performed with an F-test.")
+  
+  # for normally distributed opinions scale variance values up
+  # (needed for properly showing values in heatmap)
+  if (opinion_dist == "norm") analysis_res$var_change * 100 -> analysis_res$var_change
+  
+  # prepare dataframe for visualization 
+  analysis_res |>
+    mutate(dip_change = round(dip_change, digits = 2), # round values
+           var_change = round(var_change, digits = 2)) |> 
+    
+    # visualize chosen output variable in heatmap
+    ggplot(mapping = aes(x = c_threshold,
+                       y = lambda,
+                       fill = {{ outcome }}, # pass variables to function
+                       label = {{ outcome }}
+                       )) + 
+    geom_tile(show.legend = F) + 
+    geom_text(color = "black", 
+            size = 2.7,
+            fontface = ifelse(highlight_scheme < 0.05, "bold", "plain")) +
+    # styling of figure
+    labs(x = "Trust threshold",
+         y = "Susceptibility",
+         caption = caption) + 
+    coord_fixed(ratio = 0.3) + 
+    scale_fill_gradient2(low = "#E7786D", mid = "#ffffff", high = "#1A85FF") +
+    scale_y_continuous(breaks = seq(0, 1, by = 0.2)) +
+    scale_x_continuous(breaks = seq(0, 1, by = 0.1)) +
+    theme(panel.background = element_blank(), # APA stlye theme
+          panel.border = element_rect(color = 'black', 
+                                      fill = NA, 
+                                      linewidth = 0.5),
+          plot.caption = element_text(hjust = 0, vjust = -5, size = 8))  -> g_output
+
+  # save figure
+  ggsave(plot = g_output, 
+         filename = filename,
+         units = "cm",
+         height = 8,
+         width = 18)
+}
+```
+
+## Generate heatmaps depicting all combinations of parameters
+
+### Fully-connected graph x Uniform innate opinions
+
+```{r}
+create_tables_exp2(data = dt_simdat, graph = "er", opinion_dist = "unif", outcome = dip_change, 
+                   filename = "nonsparse_uniform.png")
+```
+
+```{r}
+create_tables_exp2(data = dt_simdat, graph = "er", opinion_dist = "unif", outcome = var_change, 
+                   filename = "nonsparse_uniform.png")
+```
+
+### Fully-connected graph x Normally distributed innate opinions
+
+```{r}
+create_tables_exp2(data = dt_simdat, graph = "er", opinion_dist = "norm", outcome = dip_change, 
+                   filename = "nonsparse_normal.png")
+```
+
+```{r}
+create_tables_exp2(data = dt_simdat, graph = "er", opinion_dist = "norm", outcome = var_change, 
+                   filename = "nonsparse_normal.png")
+```
+
+### Barabási–Albert graph x Uniform innate opinions
+
+```{r}
+create_tables_exp2(data = dt_simdat, graph = "ba", opinion_dist = "unif", outcome = dip_change, 
+                   filename = "longtail_uniform.png")
+```
+
+```{r}
+create_tables_exp2(data = dt_simdat, graph = "ba", opinion_dist = "unif", outcome = var_change, 
+                   filename = "longtail_uniform.png")
+```
+
+### Barabási–Albert graph x Normally distributed innate opinions
+
+```{r}
+create_tables_exp2(data = dt_simdat, graph = "ba", opinion_dist = "norm", outcome = dip_change, 
+                   filename = "longtail_normal.png")
+```
+
+```{r}
+create_tables_exp2(data = dt_simdat, graph = "ba", opinion_dist = "norm", outcome = var_change, 
+                   filename = "longtail_normal.png")
+```
+
+## Plot relationship of trust and bimodality for different susceptibilities (interaction plots)
+
+```{r}
+# get dataframe with calculated polarization measures
+dt_simdat |> 
+  filter(G == "er", # filter for graph and opinion distribution of interest
+         in_opinion_dist == "unif") |> 
+  analyze_simdat() -> analysis_res
+
+# prepare dataframe for visualization 
+analysis_res |> 
+  filter(lambda == 0.5 | lambda == 0.7 | lambda == 0.9) |> # filter for lambda values of interest
+  # visualize chosen output variable in scatter/line plots
+  ggplot(mapping = aes(x = c_threshold,
+                       y = dip_change,
+                       linetype = as.factor(lambda),
+                       shape = as.factor(lambda))) +
+  geom_point() +
+  geom_line() +
+  # styling of figure
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  scale_x_continuous(breaks = seq(0, 1, by = 0.1)) +
+  scale_y_continuous(breaks = seq(0, 0.16, by = 0.02)) +
+  labs(x = "Trust threshold",
+       y = "Change in Hartigan's Dip Test Statistic",
+       shape = "Susceptibility",
+       linetype = "Susceptibility",
+       caption = "Note. Hartigan's dip test statistic was averaged across 30 simulation runs. Results are based \n on a fully-connected graph and a uniform distribution of innate opinions.") +
+  theme(panel.background = element_blank(),
+        panel.border = element_rect(color = 'black', 
+                                    fill = NA, 
+                                    linewidth = 0.5),
+        plot.margin = margin(12, 12, 12, 12),
+        plot.caption = element_text(hjust = 0, vjust = -4, size = 9)) -> g_output
+  
+# save figure
+ggsave(filename = "bimodality_reloutput_exp2_unif_er.png", 
+       plot =  g_output,
+       units = "cm",
+       height = 12,
+       width = 20)
+```
+
+## Plot relationship of trust and bimodality for different network structures (interaction plots)
+
+```{r}
+# calculate bimodality measures for different graph topologies
+dt_simdat |> 
+  filter(G == "er" | G == "ba", # filter for values of interest
+         in_opinion_dist == "unif",
+         lambda == 0.7) |> 
+  group_by(G, in_opinion_dist, c_threshold, lambda, g_s_run) |> # group by all variables
+  summarise(dip_init = diptest::dip.test(in_opinion)$statistic, # dip test at initialization
+            dip = diptest::dip.test(exp_opinion)$statistic, # dip test at end
+            dip_p = diptest::dip.test(exp_opinion)$p.value) |> # p-value of dip test
+  ungroup() |> 
+  # calculate average change in dip test statistic for graph, innate opinins,
+  # trust threshold, and susceptibility
+  group_by(G, in_opinion_dist, c_threshold, lambda) |> 
+  summarise(dip_change = (mean(dip) - mean(dip_init)) |> round(digits = 4),
+            dip_p_90 = quantile(dip_p, 0.9)) |> # get 90% percentile of p-value
+
+  # visualize changes in scatter/line plots
+  ggplot(mapping = aes(x = c_threshold,
+                       y = dip_change,
+                       linetype = as.factor(G),
+                       shape = as.factor(G))) +
+  geom_point() +
+  geom_line() +
+  # styling of figure
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  scale_x_continuous(breaks = seq(0, 1, by = 0.1)) +
+  scale_y_continuous(breaks = seq(0, 0.16, by = 0.02)) +
+  labs(x = "Trust threshold",
+       y = "Change in Hartigan's Dip Test Statistic",
+       shape = "Graph",
+       linetype = "Graph",
+       caption = "Note. Hartigan's dip test statistic was averaged across 30 simulation runs. Results are based \n on a uniform distribution of innate opinions and a susceptibility of 0.7.") +
+  scale_linetype_discrete(labels=c("Barabási–Albert", "Fully connected")) + 
+  scale_shape_discrete(labels=c("Barabási–Albert", "Fully connected")) + 
+  theme(panel.background = element_blank(),
+        panel.border = element_rect(color = 'black', 
+                                    fill = NA, 
+                                    linewidth = 0.5),
+        plot.margin = margin(12, 12, 12, 12),
+        plot.caption = element_text(hjust = 0, vjust = -4, size = 9)) -> g_output
+  
+# save figure
+ggsave(filename = "bimodality_reloutput_exp2_lambda07.png", 
+       plot =  g_output,
+       units = "cm",
+       height = 12,
+       width = 20)
+```
+
+## Decision tree
+
+```{r}
+# prepare experimental results for training of classification tree
+dt_simdat |> 
+  select(-X) |> # remove row numbering
+  
+  # calculate changes in dip test statistic and p-values
+  group_by(G, in_opinion_dist, c_threshold, lambda, g_s_run) |> 
+  summarise(dip_init = diptest::dip.test(in_opinion)$statistic,
+            dip = diptest::dip.test(exp_opinion)$statistic,
+            dip_p = diptest::dip.test(exp_opinion)$p.value) |> 
+    ungroup() |> 
+    group_by(G, in_opinion_dist, c_threshold, lambda) |> 
+    summarise(dip_change = (mean(dip) - mean(dip_init)) |> round(digits = 4),
+              dip_p_90 = quantile(dip_p, 0.9)) |> 
+  
+  # create dummy variable to indicate emergence of bimodality
+  mutate(bimod_dummy = ifelse(dip_p_90 < 0.05, 1, 0)) |> 
+  
+  # remove all variables not needed for training
+  select(-c(dip_change, dip_p_90)) -> analysis_res 
+
+# adjust types of variables used in training
+analysis_res$bimod_dummy <- as.factor(analysis_res$bimod_dummy)
+analysis_res$G <- as.factor(analysis_res$G)
+analysis_res$in_opinion_dist <- as.factor(analysis_res$in_opinion_dist)
+
+# set up the cross validation (10 folds)
+tc <- caret::trainControl(method = 'cv', number = 10)
+
+# train the classification tree with 8 complexity levels
+rpart_model_bimod <- caret::train(bimod_dummy ~ .,
+                                  data = analysis_res,
+                                  tuneGrid = expand.grid(cp = c(0, 0.01, 0.025, 
+                                                                0.05, 0.1, 0.25, 
+                                                                0.5, 1)),
+                                  method = "rpart",
+                                  trControl = tc)
+```
+
+```{r}
+# plot the test accuracy for different complexity levels
+rpart_model_bimod$results |> 
+  ggplot(aes(x = cp,
+             y = Accuracy)) +
+  geom_point() + 
+  geom_line() +
+  labs(title = "Test accuracy of classification tree",
+       subtitle = "for a range of complexity parameters",
+       x = "Complexity Parameter",
+       y = "Test Accuracy",
+       caption = "Note. Results are from a classification tree prediciting the emergence of bimodality \n based on p-values of the Hartigan's dip test. If the p-value of the Hartigan's dip test \n was below 0.05, emergence of bimodality was assumed.") +
+  theme(panel.background = element_blank(),
+        panel.border = element_rect(color = 'black', 
+                                    fill = NA, 
+                                    linewidth = 0.5),
+        plot.margin = margin(12, 12, 12, 12),
+        plot.caption = element_text(hjust = 0, vjust = -4, size = 8)) -> g_output
+
+# save figure
+ggsave(filename = "test_acc_decision_tree.png", 
+       plot =  g_output,
+       units = "cm",
+       height = 10,
+       width = 15)
+
+# get complexity parameter creating the best model
+rpart_model_bimod$bestTune
+
+# plot the decision tree
+rpart.plot::rpart.plot(rpart_model_bimod$finalModel)
+```
+

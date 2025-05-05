@@ -1,0 +1,213 @@
+---
+title: ""
+author: ""
+date: ""
+format:
+  pdf:
+    fontsize: 9pt
+    include-in-header: 
+      text: '\pagenumbering{gobble}'
+execute:
+  eval: false
+  echo: true
+  warning: false
+  messages: false
+---
+
+# Load packages
+
+```{r}
+library(igraph)
+library(ggplot2)
+library(data.table)
+```
+
+# Functions used to perform simulation experiments
+
+## Create underlying interaction network
+
+```{r}
+# input: graph (character; indicates the underlying graph topology), 
+#        num_nodes (integer; indicates the number of nodes in the network)
+generate_network <- function(graph, num_nodes) { 
+  
+  # create a fully connected graph
+  if (graph == "er") {
+    
+    # edge probability
+    edge_prob <- 1
+    
+    # generate the graph with igraph
+    er_graph <- sample_gnp(n = num_nodes, p = edge_prob, directed = T)
+    
+    # convert the weighted graph to an adjacency matrix
+    m_er <- as_adjacency_matrix(er_graph, sparse = F)
+    
+    # return the adjacency matrix
+    return(m_er)
+  }
+}
+```
+
+## Create distribution of innate opinions
+
+```{r}
+# input: dist (character; indicates the distribution),
+#        num_nodes (integer; indicates the number of agents/nodes)
+generate_s_dist <- function(dist, num_nodes) {
+  # create a uniform distribution
+  if (dist == "unif") {
+    runif(n = num_nodes, min = 0, max = 1) -> s_dist
+    return(s_dist)
+  }
+}
+```
+
+## Simulation run with collecting trace data
+
+```{r}
+# input: G (matrix; adjacency matrix of interaction graph), 
+#        t_max (integer; number of iterations), z (vector; expressed opinions at t = 0), 
+#        s (vector; innate opinions), lambda (float; susceptibilities), c (float; trust threshold)
+trace_simulation_run <- function(G, t_max, z, s, lambda, c) {
+  
+  # create data.table to store trace data of expressed opinions
+  dt_ztrace <- rbind(data.table(time = integer(t_max), agent = integer(t_max), 
+                                opinion = numeric(t_max)), 
+                     data.table(time = 0, agent = seq_along(z), opinion = z)) # add initial values
+ 
+  # create the influence matrix W based on underlying network graph
+  W <- matrix(nrow = nrow(G), ncol = ncol(G))
+  
+  # iterate interaction rules of simulation until t_max is reached
+  for (t in 1:t_max) {
+  
+    # randomly choose one agent i
+    i <- sample(1:num_nodes, 1)
+    
+    # get all neighbors of i
+    which(G[i, ] > 0) -> n_i
+  
+    # if the chosen agent has any neighbors
+    if (length(n_i) != 0) {
+      
+      # calculate the opinion difference to each neighbor, determine whether it is 
+      # below or above c, and store the index of the neighbor 
+      n_i_belowc <- c() # create n_i_belowc for neighbors whose difference is below c
+      n_i_abovec <- c() # create n_i_abovec for neighbors whose difference is above c
+      
+      for (j in 1:length(n_i)) {
+        ifelse(abs(z[i] - z[n_i[j]]) <= c, 
+               n_i_belowc <- c(n_i_belowc, n_i[j]), 
+               n_i_abovec <- c(n_i_abovec , n_i[j]))
+        }
+    
+      # if there are no neighbors below the trust threshold
+      if (length(n_i_belowc) == 0) { 
+        0 -> W[i, n_i_abovec] # assign an influence of 0 for all neighbors to the influence matrix
+        
+        # if there are neighbors below the trust threshold
+        } else {
+          
+        # calculate the new weights and add the weights to the influence matrix W
+        1 / sum(n_i_belowc != 0) -> W[i, n_i_belowc] # neighbors below the trust threshold will 
+                                                     # exert equal influence and influence
+        0 -> W[i, n_i_abovec] # neighbors above the trust threshold will get 0
+      
+        # update the expressed opinion of agent i based on the equation of the FJ model
+        (1- lambda)*s[i] + lambda * sum(W[i, n_i_belowc] * z[n_i_belowc]) -> z[i] 
+        }
+      }
+    # trace the changes of the expressed opinion of agent i
+    dt_ztrace[t, `:=`(time = t, agent = i, opinion = z[i])] -> dt_out
+    
+    # when t_max is reached, return trace data of the expressed opinions
+    if (t == t_max) return(dt_out)
+  }
+}
+```
+
+# Run one exemplary simulation experiment
+
+```{r}
+num_nodes <- 20 # number of nodes in the network: 20
+G <- "er" # network structure: fully connected network 
+s_dist <- "unif" # distribution of innate opinions: uniform
+c_vals <- seq(0, 1, by = 0.05) # vector of values for trust threshold c: 0 to 1 (manipulated)
+lambda <- 0.7 # susceptibilities of agents: 0.7
+t_max <- 500 # # max iterations of simulation: 500
+
+output_length <- (t_max + num_nodes)*length(c_vals)*length(G)*length(s_dist)*length(lambda) # number of rows 
+                                                                                            # of the result
+                                                                                            # data.table
+index_beg_save <- 1 # initialize indexes used for addressing positions in result table (begin)
+index_end_save <- t_max + num_nodes # (end of save index)
+
+# create data.table in which trace data for trust thresholds is stored
+dt_simtrace <- data.table(G = character(output_length), in_opinion_dist = character(output_length), 
+                          c_threshold = numeric(output_length), lambda = numeric(output_length), 
+                          time = integer(output_length), agent = integer(output_length), 
+                          exp_opinion = numeric(output_length))
+
+# run simulations by manipulating c_vals and store output values
+for (g in G)       { # use nested loops to create each combination of simulation parameters
+  for (d in s_dist) {
+    for (k in lambda) {
+      for (i in c_vals) {
+        # for each combination of G, s_dist, lambda, and c_vals run simulation 
+        n <- generate_network(graph = g, num_nodes = num_nodes) # generate the underlying network
+        s <- generate_s_dist(dist = d, num_nodes = num_nodes) # generate the vector of innate opinions 
+        z <- s # assign the expressed opinion vector (based on the innate opinions at time-point 0)
+          
+        # get the trace data for one experimental run
+        trace_simulation_run(G = n, t_max = t_max, z = z, s = s, lambda = k, c = i) -> z_trace 
+    
+        # join trace data with context information of experimental run
+        dt_simtrace[index_beg_save:index_end_save, `:=` (G = g, in_opinion_dist = d, c_threshold = i, 
+                                                         lambda = k, time = z_trace$time, agent = z_trace$agent, 
+                                                         exp_opinion = z_trace$opinion)] 
+        
+        # increase the number of the indices at which values of run should be stored in final 
+        # data.table (used for properly storing data)
+        index_beg_save <- index_beg_save + t_max + num_nodes
+        index_end_save <- index_end_save + t_max + num_nodes
+      }
+    }
+  }
+}
+```
+
+# Plot opinion trace
+
+```{r}
+dt_simtrace |> 
+  ggplot(mapping = aes(x = time,
+                       y = exp_opinion,
+                       color = as.factor(agent))) + # use color to trace agents
+  facet_wrap(~ c_threshold) + # show facets for each trust threshold
+  # styling of figure
+  labs(x = "Time-steps",
+       y = "Expressed opinions",
+       caption = "Note. Traces of expressed opinions stem from one exemplary simulation run for a fully-connected \n graph (N = 20), a uniform distribution of innate opinions, and a susceptibility of 0.7. \n Each facet represents the opinion dynamics for one trust threshold value.") + 
+  geom_point(size = 0.2) + 
+  geom_line() + 
+  scale_color_grey(start = 0.2, end = 0.2) + # remove color
+  guides(colour = "none") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        plot.margin = margin(15, 15, 15, 15),
+        panel.background = element_blank(),
+        panel.border = element_rect(color = 'black', 
+                                    fill = NA, 
+                                    linewidth = 0.5),
+        plot.caption = element_text(hjust = 0, vjust = -5, size = 8)) -> g_output
+
+# save figure
+ggsave(filename = "opiniontrace_exp1.png", 
+       plot =  g_output,
+       units = "cm",
+       height = 13,
+       width = 16)
+```

@@ -1,0 +1,274 @@
+---
+title: ""
+author: ""
+date: ""
+format:
+  pdf:
+    fontsize: 9pt
+    include-in-header: 
+      text: '\pagenumbering{gobble}'
+execute:
+  eval: false
+  echo: true
+  warning: false
+  messages: false
+---
+
+# Load packages
+
+```{r}
+library(igraph)
+library(data.table)
+```
+
+# Functions used to perform simulation experiments
+
+## Create underlying interaction network
+
+```{r}
+# input: graph (character; indicates the underlying graph topology), 
+#        num_nodes (integer; indicates the number of nodes in the network)
+generate_network <- function(graph, num_nodes) { 
+  
+  # create a fully connected graph
+  if (graph == "er") {
+    
+    # edge probability
+    edge_prob <- 1
+    
+    # generate the graph with igraph
+    er_graph <- sample_gnp(n = num_nodes, p = edge_prob, directed = T)
+    
+    # convert the weighted graph to an adjacency matrix
+    m_er <- as_adjacency_matrix(er_graph, sparse = F)
+    
+    # return the adjacency matrix
+    return(m_er)
+  }
+  
+  # create a Barabási–Albert graph
+  if (graph == "ba") {
+      
+    # generate the graph with igraph
+    ba_graph <- sample_pa(n = num_nodes, directed = T)
+    
+    # convert the weighted graph to an adjacency matrix
+    m_ba <- as_adjacency_matrix(ba_graph, sparse = F)
+    
+    # return the adjacency matrix
+    return(m_ba)
+  }
+}
+```
+
+## Create distribution of innate opinions
+
+```{r}
+# input: dist (character; indicates the distribution),
+#        num_nodes (integer; indicates the number of agents/nodes)
+generate_s_dist <- function(dist, num_nodes) { 
+  # create a uniform distribution
+  if (dist == "unif") {
+    runif(n = num_nodes, min = 0, max = 1) -> s_dist # sample from uniform distribution
+    return(s_dist) # return vector of opinions
+  }
+  
+  # create a normal distribution
+  if (dist == "norm") {
+    rnorm(num_nodes, mean = 0.5, sd = 0.04) -> s_dist # sample from normal distribution
+    return(s_dist) # return vector of opinions
+  }
+}
+```
+
+## Simulation run
+
+```{r}
+# input: G (matrix; adjacency matrix of interaction graph), 
+#        t_max (integer; number of iterations), z (vector; expressed opinions at t = 0), 
+#        s (vector; innate opinions), lambda (float; susceptibilities), c (float; trust threshold)
+simulation_run <- function(G, t_max, z, s, lambda, c) { 
+  
+  # create the influence matrix W based on underlying network graph
+  W <- matrix(nrow = nrow(G), ncol = ncol(G)) 
+  
+  # iterate interaction rules of simulation until t_max is reached
+  for (t in 1:t_max) {
+  
+    # randomly choose one agent i
+    i <- sample(1:num_nodes, 1)
+    
+    # get all neighbors of i
+    which(G[i, ] > 0) -> n_i
+    
+    # if the chosen agent has any neighbors
+    if (length(n_i) != 0) {
+      
+      # calculate the opinion difference to each neighbor, determine whether it is 
+      # below or above c, and store the index of the neighbor 
+      n_i_belowc <- c() # create n_i_belowc for neighbors whose difference is below c
+      n_i_abovec <- c() # create n_i_abovec for neighbors whose difference is above c
+      
+      for (j in 1:length(n_i)) {
+        ifelse(abs(z[i] - z[n_i[j]]) <= c, 
+               n_i_belowc <- c(n_i_belowc, n_i[j]), 
+               n_i_abovec <- c(n_i_abovec , n_i[j]))
+      }
+      
+      # if there are no neighbors below the trust threshold
+      if (length(n_i_belowc) == 0) { 
+        0 -> W[i, n_i_abovec] # assign an influence of 0 for all neighbors to the influence matrix
+        
+        # if there are neighbors below the trust threshold
+        } else {
+          
+        # calculate the new weights and add the weights to the influence matrix W
+        1 / sum(n_i_belowc != 0) -> W[i, n_i_belowc] # neighbors below the trust threshold will 
+                                                     # exert equal influence and influence sums up to 1
+        0 -> W[i, n_i_abovec] # neighbors above the trust threshold will get 0
+      
+        # update the expressed opinion of agent i based on the equation of the FJ model
+        (1- lambda)*s[i] + lambda * sum(W[i, n_i_belowc] * z[n_i_belowc]) -> z[i] 
+        }
+      }
+    # when t_max is reached, return data to be analyzed (vector of expressed opinions)
+    if (t == t_max) return(z)
+  }
+}
+```
+
+# Simulation experiments
+ 
+## Experiment 1 
+
+### Assign simulation parameters and create data structures for saving data
+
+```{r}
+num_nodes <- 100 # number of nodes in the network: 100
+G <- "er" # network structure: fully connected network 
+s_dist <- "unif" # distribution of innate opinions: uniform
+c_vals <- seq(0, 1, by = 0.05) # vector of values for trust threshold c: 0 to 1 (manipulated)
+lambda <- 0.7 # susceptibilities of agents: 0.7
+t_max <- 1000 # max iterations of simulation: 1000
+n_rand <- 30 # number of different graphs/innate opinion samples: 30
+
+output_length <- num_nodes*length(c_vals)*n_rand*length(lambda)*length(G)*length(s_dist) # number of rows 
+                                                                                         # of the result
+                                                                                         # data.table
+index_beg_save <- 1 # initialize indexes used for addressing positions in result table (begin)
+index_end_save <- num_nodes # (end of save index)
+
+# create data.table in which simulation data is stored
+dt_simdat_exp1 <- data.table(G = character(output_length), in_opinion_dist = character(output_length), 
+                             c_threshold = numeric(output_length),  lambda = numeric(output_length), 
+                             g_s_run = integer(output_length), in_opinion = numeric(output_length), 
+                             exp_opinion = numeric(output_length))
+```
+
+### Run experiment
+
+```{r}
+for (g in G)       {  # use nested loops to create each combination of simulation parameters
+  for (d in s_dist) { 
+    for (k in lambda) {
+      for (i in c_vals) {
+      
+        # for each combination of G, s_dist, lambda, and c_vals create n_rand-times networks
+        # and innate opinions and run simulation 
+        for (j in 1:n_rand) { 
+          n <- generate_network(graph = g, num_nodes = num_nodes) # generate the underlying network
+          s <- generate_s_dist(dist = d, num_nodes = num_nodes) # generate the vector of innate opinions
+          z <- s # assign the expressed opinion vector (based on the innate opinions at time-point 0)
+          
+          # run the simulation until t_max and return expressed opinion vector z
+          simulation_run(G = n, t_max = t_max, z = z, s = s, lambda = k, c = i) -> z_final 
+                                                                                           
+          # save data needed for analysis                                                                   
+          dt_simdat_exp1[index_beg_save:index_end_save, `:=` (G = g, in_opinion_dist = d, 
+                                                              c_threshold = i, lambda = k, 
+                                                              g_s_run = j, in_opinion = s, 
+                                                              exp_opinion = z_final)] 
+        
+          # increase the number of the indices at which values of run should be stored in final 
+          # data.table (used for properly storing data)
+          index_beg_save <- index_beg_save + num_nodes 
+          index_end_save <- index_end_save + num_nodes
+          }
+      }
+    }
+  }
+}
+```
+
+### Save simulation results as csv
+
+```{r}
+write.csv(dt_simdat_exp1, file = "results_experiment1.csv")
+```
+
+## Experiment 2
+
+### Assign simulation parameters and create data structures for saving data
+
+```{r}
+num_nodes <- 100 # number of nodes in the network: 100
+G <- c("er", "ba") # network structures: fully connected network, Barabási–Albert network (manipulated)
+s_dist <- c("unif", "norm") # # distribution of innate opinions: uniform, normal (manipulated)
+c_vals <- seq(0, 1, by = 0.05) # vector of values for trust threshold c: 0 to 1 (manipulated)
+lambda <- seq(0, 1, by = 0.1) # susceptibilities of agents: 0 to 1 (manipulated)
+t_max <- 1000 # max iterations of simulation: 1000
+n_rand <- 30 # number of different graphs/innate opinion samples: 30
+
+output_length <- num_nodes*length(c_vals)*n_rand*length(lambda)*length(G)*length(s_dist) # number of rows 
+                                                                                         # of the result 
+                                                                                         # data.table
+index_beg_save <- 1 # initialize indexes used for addressing positions in result table (begin)
+index_end_save <- num_nodes # (end of save index)
+
+# create data.table in which simulation data is stored
+dt_simdat_exp2 <- data.table(G = character(output_length), in_opinion_dist = character(output_length), 
+                             c_threshold = numeric(output_length), lambda = numeric(output_length), 
+                             g_s_run = integer(output_length), in_opinion = numeric(output_length), 
+                             exp_opinion = numeric(output_length))
+```
+
+### Run experiment
+
+```{r}
+for (g in G)       { # use nested loops to create each combination of simulation parameters
+  for (d in s_dist) {
+    for (k in lambda) {
+      for(i in c_vals) {
+        
+        # for each combination of G, s_dist, lambda, and c_vals create n_rand-times networks 
+        # and innate opinions and run simulation 
+        for(j in 1:n_rand) { 
+          n <- generate_network(graph = g, num_nodes = num_nodes) # generate the underlying network
+          s <- generate_s_dist(dist = d, num_nodes = num_nodes) # generate the vector of innate opinions
+          z <- s # assign the expressed opinion vector (based on the innate opinions at time-point 0)
+          
+          # run the simulation until t_max and return expressed opinion vector z
+          simulation_run(G = n, t_max = t_max, z = z, s = s, lambda = k, c = i) -> z_final 
+    
+          # save data needed for analysis
+          dt_simdat_exp2[index_beg_save:index_end_save, `:=` (G = g, in_opinion_dist = d, 
+                                                              c_threshold = i, lambda = k, 
+                                                              g_s_run = j, in_opinion = s, 
+                                                              exp_opinion = z_final)] 
+        
+          # increase the number of the indices at which values of run should be stored in final 
+          # data.table (used for properly storing data)
+          index_beg_save <- index_beg_save + num_nodes 
+          index_end_save <- index_end_save + num_nodes
+        }
+      }
+    }
+  }
+}
+```
+
+### Save simulation results as csv
+
+```{r}
+write.csv(dt_simdat_exp2, file = "results_experiment2.csv")
+```
